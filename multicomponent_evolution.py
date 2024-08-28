@@ -136,7 +136,7 @@ def calc_diffs(phis: np.ndarray, chis: np.ndarray) -> Tuple[np.ndarray, np.ndarr
         val = chis[i] @ phis
         mu[i] += val - log_phi_sol
         p += 0.5 * val * phis[i]
-
+    # print(mu, p)
     return mu, p
 
 
@@ -158,9 +158,10 @@ def evolution_rate(phis: np.ndarray, chis: np.ndarray = None) -> np.ndarray:
     ps = np.empty(num_phases)
     for n in range(num_phases):  # iterate over phases
         mu, p = calc_diffs(phis[n], chis)
+        # print(mu, p)
         mus[n, :] = mu
         ps[n] = p
-
+    # print("________________\n")
     # calculate rate of change of the composition in all phases
     dc = np.zeros((num_phases, num_comps))
     for n in range(num_phases):
@@ -182,6 +183,7 @@ def iterate_inner(phis: np.ndarray, chis: np.ndarray, dt: float, steps: int) -> 
         dt (float): The time step
         steps (int): The step count
     """
+
     for _ in range(steps):
         # make a step
         phis += dt * evolution_rate(phis, chis)
@@ -195,7 +197,7 @@ def iterate_inner(phis: np.ndarray, chis: np.ndarray, dt: float, steps: int) -> 
             raise RuntimeError("Non-positive solvent concentrations")
 
 
-def evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray) -> np.ndarray:
+def evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray,tol = TOLERANCE) -> np.ndarray:
     """evolve a particular system governed by a specific interaction matrix
 
     Args:
@@ -212,7 +214,7 @@ def evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray) -> np.ndarray:
     steps_inner = max(1, int(np.ceil(TRACKER_INTERVAL / dt)))
 
     # run until convergence
-    while not np.allclose(phis, phis_last, rtol=TOLERANCE, atol=TOLERANCE):
+    while not np.allclose(phis, phis_last, rtol=tol, atol=tol):
         phis_last = phis.copy()
 
         # do the inner steps and reduce dt if necessary
@@ -352,5 +354,5 @@ def run_evolution(
         replace_unfit_fraction(population, np.array(performances))  # type: ignore
 
 
-if __name__ == "__main__":
-    run_evolution()
+# if __name__ == "__main__":
+#     run_evolution()
