@@ -24,7 +24,7 @@ from scipy import cluster, spatial
 
 DT_INITIAL: float = 1.0  # initial time step for the relaxation dynamics
 TRACKER_INTERVAL: float = 10.0  # interval for convergence check
-TOLERANCE: float = 1e-4  # tolerance used to decide when stationary state is reached
+TOLERANCE: float = 1e-13  # tolerance used to decide when stationary state is reached
 
 CLUSTER_DISTANCE: float = 1e-2  # cutoff value for determining composition clusters
 
@@ -32,7 +32,7 @@ PERFORMANCE_TOLERANCE: float = 0.5  # tolerance used when calculating performanc
 KILL_FRACTION: float = 0.3  # fraction of population that is replaced each generation
 
 REPETITIONS: int = 64  # number of samples used to estimate the performance
-
+ALPHA: float = 1e2  # parameter for the evolution rate
 
 def random_interaction_matrix(
     num_comp: int, chi_mean: float = None, chi_std: float = 1
@@ -170,7 +170,7 @@ def evolution_rate(phis: np.ndarray, chis: np.ndarray = None) -> np.ndarray:
             for i in range(num_comps):
                 delta_mu = mus[m, i] - mus[n, i]
                 dc[n, i] += phis[n, i] * (phis[m, i] * delta_mu - delta_p)
-    return dc
+    return ALPHA*dc
 
 
 @njit
