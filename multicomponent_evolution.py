@@ -24,7 +24,7 @@ from scipy import cluster, spatial
 
 DT_INITIAL: float = 1.0  # initial time step for the relaxation dynamics
 TRACKER_INTERVAL: float = 10.0  # interval for convergence check
-TOLERANCE: float = 1e-13  # tolerance used to decide when stationary state is reached
+TOLERANCE: float = 1e-15  # tolerance used to decide when stationary state is reached
 
 CLUSTER_DISTANCE: float = 1e-2  # cutoff value for determining composition clusters
 
@@ -208,6 +208,7 @@ def evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray,tol = TOLERANCE) -> 
         phis: The final composition of all phases
     """
     phis = phis_init.copy()
+    
     phis_last = np.zeros_like(phis)
 
     dt = DT_INITIAL
@@ -231,6 +232,56 @@ def evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray,tol = TOLERANCE) -> 
                     raise RuntimeError(f"{err}\nReached minimal time step.")
             else:
                 break
+
+    return phis
+
+def modified_evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray,tol = TOLERANCE) -> np.ndarray:
+    """A modified version of the evolve_dynamics function 
+    where the stationary state is evaluated by the convergence of the chemical potentials
+    and pressures
+
+    Args:
+        chis: The interaction matrix
+        phis_init: The initial composition of all phases
+
+    Returns:
+        phis: The final composition of all phases
+    """
+    phis = phis_init.copy()
+    phis_last = np.zeros_like(phis)
+    num_phases, num_comps = phis.shape
+    mus = np.empty((num_phases, num_comps))
+    ps = np.empty(num_phases)
+    for n in range(num_phases):  # iterate over phases
+        mu, p = calc_diffs(phis[n], chis)
+        # print(mu, p)
+        mus[n, :] = mu
+        ps[n] = p
+    mus_last = np.zeros_like(mus)
+    ps_last = np.zeros_like(ps)
+    dt = DT_INITIAL
+    steps_inner = max(1, int(np.ceil(TRACKER_INTERVAL / dt)))
+
+    # run until convergence
+    while not np.allclose(mus, mus_last, rtol=tol, atol=tol):
+        while not np.allclose(ps, ps_last, rtol=tol, atol=tol):
+            phis_last = phis.copy()
+            mus_last = mus.copy()
+            ps_last = ps.copy()
+            # do the inner steps and reduce dt if necessary
+            while True:
+                try:
+                    iterate_inner(phis, chis, dt=dt, steps=steps_inner)
+                except RuntimeError as err:
+                    # problems in the simulation => reduced dt and reset phis
+                    dt /= 2
+                    steps_inner *= 2
+                    phis[:] = phis_last
+
+                    if dt < 1e-7:
+                        raise RuntimeError(f"{err}\nReached minimal time step.")
+                else:
+                    break
 
     return phis
 
