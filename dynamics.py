@@ -24,7 +24,7 @@ from scipy import cluster, spatial
 
 DT_INITIAL: float = 1.0  # initial time step for the relaxation dynamics
 TRACKER_INTERVAL: float = 10.0  # interval for convergence check
-TOLERANCE: float = 1e-4  # tolerance used to decide when stationary state is reached
+TOLERANCE: float = 1e-15  # tolerance used to decide when stationary state is reached
 
 CLUSTER_DISTANCE: float = 1e-2  # cutoff value for determining composition clusters
 
@@ -32,7 +32,7 @@ PERFORMANCE_TOLERANCE: float = 0.5  # tolerance used when calculating performanc
 KILL_FRACTION: float = 0.3  # fraction of population that is replaced each generation
 
 REPETITIONS: int = 64  # number of samples used to estimate the performance
-
+ALPHA: float = 1e2  # parameter for the evolution rate
 
 def random_interaction_matrix(
     num_comp: int, chi_mean: float = None, chi_std: float = 1
@@ -62,33 +62,6 @@ def random_interaction_matrix(
     chis[i, j] = chi_vals
     chis[j, i] = chi_vals
     return chis
-
-
-def mutate(
-    population: List[np.ndarray], mutation_size: float = 0.1, norm_max: float = np.inf
-) -> None:
-    """mutate all interaction matrices in a population
-
-    Args:
-        population (list): The interaction matrices of all individuals
-        mutation_size (float): Magnitude of the perturbation
-        norm_max (float): The maximal norm the matrix may attain
-    """
-    for chis in population:
-        num_comp = len(chis)
-
-        # add normally distributed random number to independent entries
-        Δchi = np.zeros((num_comp, num_comp))
-        num_entries = num_comp * (num_comp - 1) // 2
-        idx = np.triu_indices_from(Δchi, k=1)
-        Δchi[idx] = np.random.normal(0, mutation_size, size=num_entries)
-        chis += Δchi + Δchi.T  # preserve symmetry
-
-        if np.isfinite(norm_max):
-            # rescale entries to obey limit
-            norm = np.mean(np.abs(chis[idx]))
-            if norm > norm_max:
-                chis *= norm_max / norm
 
 
 @njit
@@ -136,7 +109,7 @@ def calc_diffs(phis: np.ndarray, chis: np.ndarray) -> Tuple[np.ndarray, np.ndarr
         val = chis[i] @ phis
         mu[i] += val - log_phi_sol
         p += 0.5 * val * phis[i]
-
+    # print(mu, p)
     return mu, p
 
 
@@ -158,9 +131,10 @@ def evolution_rate(phis: np.ndarray, chis: np.ndarray = None) -> np.ndarray:
     ps = np.empty(num_phases)
     for n in range(num_phases):  # iterate over phases
         mu, p = calc_diffs(phis[n], chis)
+        # print(mu, p)
         mus[n, :] = mu
         ps[n] = p
-
+    # print("________________\n")
     # calculate rate of change of the composition in all phases
     dc = np.zeros((num_phases, num_comps))
     for n in range(num_phases):
@@ -169,7 +143,7 @@ def evolution_rate(phis: np.ndarray, chis: np.ndarray = None) -> np.ndarray:
             for i in range(num_comps):
                 delta_mu = mus[m, i] - mus[n, i]
                 dc[n, i] += phis[n, i] * (phis[m, i] * delta_mu - delta_p)
-    return dc
+    return ALPHA*dc
 
 
 @njit
@@ -182,6 +156,7 @@ def iterate_inner(phis: np.ndarray, chis: np.ndarray, dt: float, steps: int) -> 
         dt (float): The time step
         steps (int): The step count
     """
+
     for _ in range(steps):
         # make a step
         phis += dt * evolution_rate(phis, chis)
@@ -195,7 +170,7 @@ def iterate_inner(phis: np.ndarray, chis: np.ndarray, dt: float, steps: int) -> 
             raise RuntimeError("Non-positive solvent concentrations")
 
 
-def evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray) -> np.ndarray:
+def evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray,tol = TOLERANCE) -> np.ndarray:
     """evolve a particular system governed by a specific interaction matrix
 
     Args:
@@ -206,13 +181,14 @@ def evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray) -> np.ndarray:
         phis: The final composition of all phases
     """
     phis = phis_init.copy()
+    
     phis_last = np.zeros_like(phis)
 
     dt = DT_INITIAL
     steps_inner = max(1, int(np.ceil(TRACKER_INTERVAL / dt)))
 
     # run until convergence
-    while not np.allclose(phis, phis_last, rtol=TOLERANCE, atol=TOLERANCE):
+    while not np.allclose(phis, phis_last, rtol=tol, atol=tol):
         phis_last = phis.copy()
 
         # do the inner steps and reduce dt if necessary
@@ -229,6 +205,56 @@ def evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray) -> np.ndarray:
                     raise RuntimeError(f"{err}\nReached minimal time step.")
             else:
                 break
+
+    return phis
+
+def modified_evolve_dynamics(chis: np.ndarray, phis_init: np.ndarray,tol = TOLERANCE) -> np.ndarray:
+    """A modified version of the evolve_dynamics function 
+    where the stationary state is evaluated by the convergence of the chemical potentials
+    and pressures
+
+    Args:
+        chis: The interaction matrix
+        phis_init: The initial composition of all phases
+
+    Returns:
+        phis: The final composition of all phases
+    """
+    phis = phis_init.copy()
+    phis_last = np.zeros_like(phis)
+    num_phases, num_comps = phis.shape
+    mus = np.empty((num_phases, num_comps))
+    ps = np.empty(num_phases)
+    for n in range(num_phases):  # iterate over phases
+        mu, p = calc_diffs(phis[n], chis)
+        # print(mu, p)
+        mus[n, :] = mu
+        ps[n] = p
+    mus_last = np.zeros_like(mus)
+    ps_last = np.zeros_like(ps)
+    dt = DT_INITIAL
+    steps_inner = max(1, int(np.ceil(TRACKER_INTERVAL / dt)))
+
+    # run until convergence
+    while not np.allclose(mus, mus_last, rtol=tol, atol=tol):
+        while not np.allclose(ps, ps_last, rtol=tol, atol=tol):
+            phis_last = phis.copy()
+            mus_last = mus.copy()
+            ps_last = ps.copy()
+            # do the inner steps and reduce dt if necessary
+            while True:
+                try:
+                    iterate_inner(phis, chis, dt=dt, steps=steps_inner)
+                except RuntimeError as err:
+                    # problems in the simulation => reduced dt and reset phis
+                    dt /= 2
+                    steps_inner *= 2
+                    phis[:] = phis_last
+
+                    if dt < 1e-7:
+                        raise RuntimeError(f"{err}\nReached minimal time step.")
+                else:
+                    break
 
     return phis
 
@@ -251,106 +277,22 @@ def count_phases(phis: np.ndarray) -> int:
 
     return int(clusters.max())
 
-
-def estimate_performance(chis: np.ndarray, target_phase_count: float) -> float:
-    """estimate the performance of a given interaction matrix
-
-    Args:
-        chis: The interaction matrix
-        target_phase_count (float): The targeted phase count
-
-    Returns:
-        float: The estimated performance (between 0 and 1)
-    """
-    num_comp = len(chis)
-    num_phases = num_comp + 2  # number of initial phases
-
-    phase_counts = np.zeros(num_phases + 1)
-    for _ in range(REPETITIONS):
-        # choose random initial condition
-        phis = get_uniform_random_composition(num_phases, num_comp)
-
-        # run relaxation dynamics again
-        try:
-            phis_final = evolve_dynamics(chis, phis_init=phis)
-        except RuntimeError as err:
-            # simulation could not finish
-            print(f"Simulation failed: {err}")
-        else:
-            # determine number of clusters
-            phase_counts[count_phases(phis_final)] += 1
-
-    # determine the phase count weights
-    sizes = np.arange(num_phases + 1)
-    arg = (sizes - target_phase_count) / PERFORMANCE_TOLERANCE
-    weights = np.exp(-0.5 * arg ** 2)
-
-    # calculate the performance
-    return phase_counts @ weights / phase_counts.sum()
-
-
-def replace_unfit_fraction(
-    population: List[np.ndarray], performances: np.ndarray
-) -> None:
-    """replace the individuals with the lowest performance
+def collapse_phases(phis: np.ndarray, tol: float = 1e-3) -> np.ndarray:
+    """ collapses phases with similar composition using clustering.
 
     Args:
-        population: The individual interaction matrices
-        performances: The performances of all individuals
+        phis: The composition of all phases -- some of which are repeating
+        tol: The tolerance for clustering
+    returns:
+        phis_out: The composition of all phases after collapsing.
     """
-    pop_size = len(population)
+    dists = spatial.distance.pdist(phis)
+    links = cluster.hierarchy.linkage(dists, method="centroid")
+    clusters = cluster.hierarchy.fcluster(Z=links, t=tol, criterion="distance")
+    # clusters = cluster.hierarchy.fcluster(links,, criterion="distance")
+    n_clusters = len(set(clusters))
 
-    # determine the number of individuals that need to be replaced
-    kill_count = round(KILL_FRACTION * pop_size)
-    # kill least fit individuals
-    kill_idx = np.argsort(performances)[:kill_count]
-
-    # determine the individuals that are kept
-    keep_idx = np.array([i for i in range(pop_size) if i not in kill_idx], dtype=int)
-
-    # weigh reproduction of surviving individuals by fitness
-    weights = performances[keep_idx] / performances[keep_idx].sum()
-    for i in kill_idx:
-        # weighted choice of a surviving individual
-        j = np.random.choice(keep_idx, p=weights)
-        population[i] = population[j].copy()
-
-
-def run_evolution(
-    num_comp: int = 5,
-    pop_size: int = 3,
-    mutation_size: float = 0.1,
-    target_phase_count: float = 3,
-    num_generations: int = 30,
-) -> None:
-    """evolve the interaction matrices
-
-    Args:
-        num_comp (int): Number of different components
-        pop_size (int): Population size
-        mutation_size (float): Standard deviation of the mutation
-        target_phase_count (float): The targeted phase count
-        num_generations (int): Number of generations
-    """
-    # pick random interaction matrices initially
-    population = [random_interaction_matrix(num_comp=num_comp) for _ in range(pop_size)]
-
-    # run the simulation for many generations
-    for generation in range(1, num_generations + 1):
-        # evolve the population one generation
-
-        # mutate all individuals
-        mutate(population, mutation_size=mutation_size)
-
-        # estimate performance of all individuals
-        performances = [
-            estimate_performance(chis, target_phase_count) for chis in population
-        ]
-        print(f"Generation {generation}, Average performance: {np.mean(performances)}")
-
-        # determine which individuals to kill
-        replace_unfit_fraction(population, np.array(performances))  # type: ignore
-
-
-if __name__ == "__main__":
-    run_evolution()
+    phis_out = np.empty((n_clusters, phis.shape[1]))
+    for i in set(clusters):
+        phis_out[i-1] = np.mean(phis[clusters == i], axis=0)
+    return phis_out
